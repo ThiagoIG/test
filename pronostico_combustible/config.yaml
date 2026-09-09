@@ -37,6 +37,11 @@ columnas:
   industria:      "Industria"
   portfolio:      "Portfolio"      # NS N / NS N-1 / Portfolio
 
+  # Mes del primer consumo del cliente. Es el dato AUTORITATIVO del alta: con
+  # el, el programa no tiene que adivinar desde cuando la fila es historia real.
+  # Acepta 2025-03, Mar-25, Marzo 2025 o una fecha de Excel. Pon null si no la tenes.
+  fecha_primer_consumo: "Fecha primer consumo"
+
 # La serie a pronosticar se identifica por la COMBINACION de estas columnas.
 # Un mismo ID con 2 soluciones = 2 series independientes. Este es el default
 # correcto para tu caso. Si quisieras pronosticar el ID consolidado, deja
@@ -87,7 +92,8 @@ meses:
   #                      RECOMENDADO: no es "consumio 0", es "no era cliente".
   #   "cero"          -> se cuentan como consumo cero (hunde los promedios de
   #                      las altas nuevas y las hace ver como clientes en caida).
-  # El alta se detecta como el primer mes con consumo. Los ceros POSTERIORES
+  # El alta sale de la columna 'fecha_primer_consumo' si esta cargada; si no, se
+  # infiere del primer mes con consumo. Los ceros POSTERIORES al alta
   # si se toman como reales (baja, parada de planta, etc.).
   previo_al_alta: "no_es_cliente"
 

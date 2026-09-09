@@ -511,3 +511,94 @@ def test_previo_al_alta_es_configurable(entorno):
         assert np.isfinite(r.pronostico.to_numpy()).all()
         assert (r.pronostico.to_numpy() >= 0).all()
     assert a.pronostico.to_numpy().sum() != b.pronostico.to_numpy().sum()
+
+
+# ---------------------------------------------------------------------------
+# Fecha de primer consumo declarada (columna del Excel)
+# ---------------------------------------------------------------------------
+def _panel_con_alta():
+    periodos = [pd.Period("2026-01", freq="M") + i for i in range(6)]
+    indice = pd.Index(["declarado", "sin_fecha"], name="serie_id")
+    panel = pd.DataFrame(
+        [
+            # Cliente desde marzo, pero recien consumio en mayo:
+            # marzo y abril son ceros REALES (era cliente y no consumio).
+            [0.0, 0.0, 0.0, 0.0, 100.0, 200.0],
+            [0.0, 0.0, 0.0, 0.0, 100.0, 200.0],
+        ],
+        index=indice, columns=periodos,
+    )
+    meta = pd.DataFrame(
+        {"fecha_primer_consumo": [pd.Period("2026-03", freq="M"), None]},
+        index=indice,
+    )
+    return panel, meta
+
+
+def test_mascara_prefiere_la_fecha_declarada():
+    from pronostico.caracteristicas import mascara_actividad
+
+    panel, meta = _panel_con_alta()
+    m = mascara_actividad(panel, meta)
+
+    # Declarada: cliente desde marzo (indice 2), asi los ceros de marzo y abril
+    # cuentan como historia real.
+    np.testing.assert_array_equal(m[0], [False, False, True, True, True, True])
+    # Sin fecha: se infiere del primer consumo (mayo, indice 4).
+    np.testing.assert_array_equal(m[1], [False, False, False, False, True, True])
+
+
+def test_fecha_declarada_cambia_el_promedio():
+    """Los ceros posteriores al alta deben pesar; los previos no."""
+    from pronostico.caracteristicas import mascara_actividad
+
+    panel, meta = _panel_con_alta()
+    modelo = crear_modelos(_config_minima())["media_3m"]
+    futuros = [pd.Period("2026-07", freq="M")]
+
+    pred = modelo.predecir(panel, meta, futuros)
+    # Declarado: ultimos 3 meses son (0, 100, 200) -> 100.
+    assert pred.loc["declarado"].iloc[0] == pytest.approx(100.0)
+    # Sin fecha: el cero de abril es previo al alta inferida -> (100, 200) -> 150.
+    assert pred.loc["sin_fecha"].iloc[0] == pytest.approx(150.0)
+
+
+def test_antiguedad_se_mide_desde_el_alta_no_desde_el_panel():
+    from pronostico.caracteristicas import antiguedad_meses
+
+    indice = pd.Index(["viejo", "nuevo", "sin_dato"], name="serie_id")
+    meta = pd.DataFrame(
+        {"fecha_primer_consumo": [
+            pd.Period("2019-05", freq="M"),
+            pd.Period("2026-06", freq="M"),
+            None,
+        ]},
+        index=indice,
+    )
+    a = antiguedad_meses(meta, indice, pd.Period("2026-08", freq="M"))
+
+    assert a[0] == 87.0     # el panel puede empezar en 2024 y aun asi verse la antiguedad real
+    assert a[1] == 2.0
+    assert np.isnan(a[2])
+
+
+def test_fecha_primer_consumo_se_lee_del_excel(entorno):
+    carpeta, base = entorno
+    res = _correr(base, carpeta)
+
+    assert "fecha_primer_consumo" in res.datos.meta.columns
+    fechas = res.datos.meta["fecha_primer_consumo"].dropna()
+    assert len(fechas) > 0
+    assert all(isinstance(p, pd.Period) for p in fechas)
+    # Ningun alta puede ser posterior al ultimo mes real.
+    assert fechas.max() <= res.datos.ultimo_real
+
+
+def test_funciona_sin_la_columna_de_alta(entorno):
+    """Quien no tenga esa columna debe seguir corriendo, infiriendo el alta."""
+    carpeta, base = entorno
+    res = _correr(base, carpeta, **{"columnas.fecha_primer_consumo": None})
+
+    assert "fecha_primer_consumo" not in res.datos.meta.columns
+    assert np.isfinite(res.pronostico.to_numpy()).all()
+    assert (res.pronostico.to_numpy() >= 0).all()

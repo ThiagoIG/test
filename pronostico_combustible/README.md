@@ -87,10 +87,22 @@ Si tenés historia desde 2024 pero muchos clientes son altas recientes, sus fila
 arrancan vacías. Esas celdas **no son "consumió 0"**: son "no era cliente".
 
 Tratarlas como ceros hunde los promedios históricos de toda alta nueva y hace que
-el modelo la lea como un cliente errático o en caída. El programa detecta el mes
-de alta (primer mes con consumo) y excluye lo anterior de promedios, tendencias y
-del entrenamiento. Los ceros **posteriores** al alta sí se toman como reales:
-esos son bajas o paradas, e importan.
+el modelo la lea como un cliente errático o en caída. El programa excluye lo
+anterior al alta de promedios, tendencias y del entrenamiento. Los ceros
+**posteriores** al alta sí se toman como reales: esos son bajas o paradas.
+
+**El alta sale de la columna `Fecha primer consumo`** si está mapeada en
+`columnas.fecha_primer_consumo`. Es el dato autoritativo y evita adivinar. La
+diferencia importa: un cliente dado de alta en marzo que recién consumió en junio
+tiene tres meses reales en que era cliente y consumió cero — y esos ceros dicen
+algo. Inferir el alta del primer consumo se los borraría.
+
+Si la columna no está, o una fila la tiene vacía, se infiere del primer mes con
+litros. El programa avisa cuántas filas quedaron así.
+
+Ese dato además habilita `antiguedad_meses` como variable del modelo: un cliente
+de 2019 y uno de 2024 pueden tener ambos el panel completo, pero no la misma
+antigüedad.
 
 Se controla con `meses.previo_al_alta` (`no_es_cliente` por defecto, `cero` para
 volver al comportamiento ingenuo y comparar).
@@ -149,6 +161,7 @@ columnas:
   id_cliente: "ID"
   solucion:   "Solucion"
   segmento:   "Segmento"
+  fecha_primer_consumo: "Fecha primer consumo"   # null si no la tenés
 ```
 
 **La serie se identifica por `ID + Solución`**, no por ID solo. Un cliente con
@@ -207,7 +220,7 @@ pronostico_combustible/
 │   ├── motor.py                   # orquestador y reglas de negocio
 │   └── salida.py                  # escritura del Excel
 ├── datos/generar_ejemplo.py       # datos sintéticos de prueba
-└── tests/test_pronostico.py       # 50 tests
+└── tests/test_pronostico.py       # 55 tests
 ```
 
 ### Agregar un modelo propio
@@ -235,7 +248,7 @@ python -m pytest tests/ -q
 ```
 
 Cubren la detección de meses, la ausencia de data leakage, el tratamiento de los
-meses previos al alta, la forma de salida de cada modelo, cada regla de negocio y
+meses previos al alta (con fecha declarada y sin ella), la forma de salida de cada modelo, cada regla de negocio y
 la validación de la configuración.
 
 ---

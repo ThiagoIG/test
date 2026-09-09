@@ -8,7 +8,12 @@ import numpy as np
 import pandas as pd
 
 
-def mascara_actividad(panel: pd.DataFrame | np.ndarray) -> np.ndarray:
+COLUMNA_ALTA = "fecha_primer_consumo"
+
+
+def mascara_actividad(
+    panel: pd.DataFrame | np.ndarray, meta: pd.DataFrame | None = None
+) -> np.ndarray:
     """
     Marca desde que mes cada serie ya era cliente (True), y cuales son previos
     a su alta (False).
@@ -18,11 +23,56 @@ def mascara_actividad(panel: pd.DataFrame | np.ndarray) -> np.ndarray:
     como ceros, los promedios historicos se hunden y el modelo lee al cliente
     como erratico o en caida cuando en realidad recien arranca.
 
-    El criterio es el primer mes con consumo. Todo lo anterior se considera
-    previo al alta; los ceros POSTERIORES si son reales (baja, parada, etc.).
+    Si `meta` trae la fecha de primer consumo, se usa ese dato, que es
+    autoritativo. Si no, se infiere como el primer mes con consumo > 0.
+
+    La diferencia no es menor: un cliente dado de alta en marzo que recien
+    consumio en junio tiene tres meses de historia REAL en que era cliente y
+    consumio cero. Inferir el alta se los borraria, y justamente esos ceros
+    dicen algo sobre el cliente.
     """
     valores = panel.to_numpy(float) if isinstance(panel, pd.DataFrame) else np.asarray(panel, float)
-    return np.logical_or.accumulate(valores > 0, axis=1)
+    inferida = np.logical_or.accumulate(valores > 0, axis=1)
+
+    if meta is None or COLUMNA_ALTA not in getattr(meta, "columns", []):
+        return inferida
+    if not isinstance(panel, pd.DataFrame):
+        return inferida
+
+    altas = meta[COLUMNA_ALTA].reindex(panel.index)
+    ordinal_alta = np.array(
+        [p.ordinal if isinstance(p, pd.Period) else np.nan for p in altas], dtype=float
+    )
+    ordinal_col = np.array([p.ordinal for p in panel.columns], dtype=float)
+
+    declarada = ordinal_col.reshape(1, -1) >= ordinal_alta.reshape(-1, 1)
+    conocida = ~np.isnan(ordinal_alta)
+
+    # Se cae a la inferencia solo en las series sin fecha cargada.
+    return np.where(conocida.reshape(-1, 1), declarada, inferida)
+
+
+def antiguedad_meses(
+    meta: pd.DataFrame | None, indice: pd.Index, corte: pd.Period
+) -> np.ndarray:
+    """
+    Meses transcurridos desde el alta del cliente hasta el mes de corte.
+
+    Se distingue de `meses_desde_alta`, que solo cuenta los meses visibles en el
+    panel: un cliente de 2019 y uno de 2024 tienen ambos el panel completo, pero
+    no la misma antiguedad. Es NaN si no hay fecha de alta cargada.
+    """
+    if meta is None or COLUMNA_ALTA not in getattr(meta, "columns", []):
+        return np.full(len(indice), np.nan)
+
+    altas = meta[COLUMNA_ALTA].reindex(indice)
+    return np.array(
+        [
+            float((corte - p).n) if isinstance(p, pd.Period) else np.nan
+            for p in altas
+        ],
+        dtype=float,
+    )
 
 
 def a_panel(largo: pd.DataFrame, periodos: list[pd.Period] | None = None) -> pd.DataFrame:
@@ -174,7 +224,7 @@ def construir_muestras(
     n_meses = len(periodos)
     series = panel.index.to_numpy()
 
-    mascara = mascara_actividad(panel) if usar_mascara else None
+    mascara = mascara_actividad(panel, meta) if usar_mascara else None
     cat = _preparar_categoricas(meta, panel.index, cols_categoricas)
     muestras: dict[int, list[pd.DataFrame]] = {h: [] for h in range(1, horizonte + 1)}
 
@@ -186,6 +236,7 @@ def construir_muestras(
             df["horizonte"] = float(h)
             df["mes_objetivo"] = float(periodos[destino].month)
             df["mes_corte"] = float(periodos[corte].month)
+            df["antiguedad_meses"] = antiguedad_meses(meta, panel.index, periodos[corte])
             df["serie_id"] = series
             df["base"] = base_normalizacion(f)
             df["y"] = valores[:, destino]
@@ -219,9 +270,10 @@ def construir_prediccion(
     """Variables para predecir cada mes futuro, calculadas en el ultimo mes real."""
     valores = panel.to_numpy(dtype=float)
     corte = valores.shape[1] - 1
-    mascara = mascara_actividad(panel) if usar_mascara else None
+    mascara = mascara_actividad(panel, meta) if usar_mascara else None
     cat = _preparar_categoricas(meta, panel.index, cols_categoricas)
     mes_corte = float(panel.columns[-1].month)
+    antiguedad = antiguedad_meses(meta, panel.index, panel.columns[-1])
 
     f = features_en_corte(valores, corte, n_lags, mascara)
     base = base_normalizacion(f)
@@ -232,6 +284,7 @@ def construir_prediccion(
         df["horizonte"] = float(h)
         df["mes_objetivo"] = float(periodos_futuros[h - 1].month)
         df["mes_corte"] = mes_corte
+        df["antiguedad_meses"] = antiguedad
         df["serie_id"] = panel.index.to_numpy()
         df["base"] = base
         for nombre, serie_cat in cat.items():

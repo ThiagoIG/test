@@ -113,7 +113,7 @@ def _aplicar_reglas(
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     reglas = cfg.get("reglas") or {}
     valores = panel.to_numpy(float)
-    activa = _mascara_actividad(panel, cfg)
+    activa = _mascara_actividad(panel, cfg, datos.meta)
     final = crudo.copy()
 
     diag = pd.DataFrame(index=panel.index)
@@ -198,11 +198,13 @@ def _aplicar_reglas(
     return final, diag
 
 
-def _mascara_actividad(panel: pd.DataFrame, cfg: Config) -> np.ndarray:
+def _mascara_actividad(
+    panel: pd.DataFrame, cfg: Config, meta: pd.DataFrame | None = None
+) -> np.ndarray:
     """Meses en que cada serie ya era cliente. Ver 'meses.previo_al_alta'."""
     if cfg.get("meses.previo_al_alta", "no_es_cliente") == "cero":
         return np.ones(panel.shape, dtype=bool)
-    return car.mascara_actividad(panel)
+    return car.mascara_actividad(panel, meta)
 
 
 def _etiquetas_grupo(

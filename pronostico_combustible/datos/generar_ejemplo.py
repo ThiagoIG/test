@@ -76,7 +76,8 @@ def generar(n_clientes: int, semilla: int, ultimo_mes: str, meses_historia: int)
             )
 
     df = pd.DataFrame(filas)
-    orden = ["Solucion", "ID", "Cliente", "Cliente Grupo", "Segmento", "Industria", "Portfolio"]
+    orden = ["Solucion", "ID", "Cliente", "Cliente Grupo", "Segmento", "Industria",
+             "Portfolio", "Fecha primer consumo"]
     meses = [f"{ABREV[p.month]}-{p.year % 100:02d}" for p in periodos]
     return df[orden + meses]
 
@@ -107,6 +108,7 @@ def _generar_serie(rng, id_cliente, nombre, grupo, segmento, industria, solucion
     if rng.random() < 0.06:
         baja = int(rng.integers(len(periodos) - 6, len(periodos)))
 
+    alta = periodos[min(inicio, len(periodos) - 1)]
     fila = {
         "Solucion": solucion,
         "ID": id_cliente,
@@ -115,6 +117,7 @@ def _generar_serie(rng, id_cliente, nombre, grupo, segmento, industria, solucion
         "Segmento": segmento,
         "Industria": industria,
         "Portfolio": portfolio,
+        "Fecha primer consumo": f"{alta.year}-{alta.month:02d}",
     }
 
     for t, periodo in enumerate(periodos):
@@ -159,14 +162,14 @@ def main() -> None:
     with pd.ExcelWriter(destino, engine="xlsxwriter") as writer:
         df.to_excel(writer, sheet_name="Consumo", index=False)
         hoja = writer.sheets["Consumo"]
-        hoja.set_column(0, 6, 22)
-        hoja.set_column(7, len(df.columns) - 1, 11)
-        hoja.freeze_panes(1, 7)
+        hoja.set_column(0, 7, 22)
+        hoja.set_column(8, len(df.columns) - 1, 11)
+        hoja.freeze_panes(1, 8)
 
     print(f"Excel de ejemplo generado: {destino}")
     print(f"   {len(df):,} filas (cliente + solucion)")
-    print(f"   {len(df.columns) - 7} columnas de meses: "
-          f"{df.columns[7]} ... {df.columns[-1]}")
+    print(f"   {len(df.columns) - 8} columnas de meses: "
+          f"{df.columns[8]} ... {df.columns[-1]}")
 
 
 if __name__ == "__main__":

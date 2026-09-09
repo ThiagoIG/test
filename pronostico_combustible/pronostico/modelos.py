@@ -46,13 +46,15 @@ class Modelo(ABC):
         matriz = np.repeat(valores.reshape(-1, 1), len(futuros), axis=1)
         return pd.DataFrame(matriz, index=indice, columns=futuros)
 
-    def _mascara(self, panel: pd.DataFrame) -> np.ndarray:
+    def _mascara(self, panel: pd.DataFrame, meta: pd.DataFrame | None = None) -> np.ndarray:
         """Meses en que cada serie ya era cliente. Ver 'meses.previo_al_alta'."""
         if self.cfg.get("meses.previo_al_alta", "no_es_cliente") == "cero":
             return np.ones(panel.shape, dtype=bool)
-        return car.mascara_actividad(panel)
+        return car.mascara_actividad(panel, meta)
 
-    def _ventana_activa(self, panel: pd.DataFrame, k: int) -> np.ndarray:
+    def _ventana_activa(
+        self, panel: pd.DataFrame, k: int, meta: pd.DataFrame | None = None
+    ) -> np.ndarray:
         """
         Ultimos k meses, con NaN en los previos al alta del cliente.
 
@@ -61,7 +63,7 @@ class Modelo(ABC):
         las altas recientes.
         """
         valores = panel.to_numpy(float)
-        activa = self._mascara(panel)
+        activa = self._mascara(panel, meta)
         k = min(k, valores.shape[1])
         return np.where(activa[:, -k:], valores[:, -k:], np.nan)
 
@@ -91,7 +93,7 @@ class MediaMovil(Modelo):
     ventana = 3
 
     def predecir(self, panel, meta, futuros):
-        v = self._ventana_activa(panel, self.ventana)
+        v = self._ventana_activa(panel, self.ventana, meta)
         with self._sin_avisos_de_nan():
             nivel = np.nanmean(v, axis=1)
         return self._repetir(nivel, futuros, panel.index)
@@ -103,7 +105,7 @@ class MedianaMovil(Modelo):
     ventana = 3
 
     def predecir(self, panel, meta, futuros):
-        v = self._ventana_activa(panel, self.ventana)
+        v = self._ventana_activa(panel, self.ventana, meta)
         with self._sin_avisos_de_nan():
             nivel = np.nanmedian(v, axis=1)
         return self._repetir(nivel, futuros, panel.index)
@@ -118,7 +120,7 @@ class MediaPonderada(Modelo):
         k = min(len(pesos), panel.shape[1])
         p = pesos[-k:]
 
-        v = self._ventana_activa(panel, k)
+        v = self._ventana_activa(panel, k, meta)
         presente = ~np.isnan(v)
 
         # Los pesos se renormalizan sobre los meses efectivamente disponibles,
@@ -138,7 +140,7 @@ class TendenciaRobusta(Modelo):
     ventana = 6
 
     def predecir(self, panel, meta, futuros):
-        v = self._ventana_activa(panel, self.ventana)
+        v = self._ventana_activa(panel, self.ventana, meta)
         n = v.shape[1]
         phi = float(self.cfg.get("modelos.amortiguacion_tendencia", 0.6) or 0.0)
 
@@ -176,7 +178,7 @@ class SuavizadoHolt(Modelo):
 
     def predecir(self, panel, meta, futuros):
         v = panel.to_numpy(float)
-        activa = self._mascara(panel)
+        activa = self._mascara(panel, meta)
         phi = float(self.cfg.get("modelos.amortiguacion_tendencia", 0.6) or 0.0)
         n_series, n_meses = v.shape
 
@@ -212,11 +214,11 @@ class EstacionalNaive(Modelo):
     def predecir(self, panel, meta, futuros):
         disponibles = {p: i for i, p in enumerate(panel.columns)}
         v = panel.to_numpy(float)
-        activa = self._mascara(panel)
+        activa = self._mascara(panel, meta)
 
         with self._sin_avisos_de_nan():
             respaldo = np.nan_to_num(
-                np.nanmean(self._ventana_activa(panel, 3), axis=1)
+                np.nanmean(self._ventana_activa(panel, 3, meta), axis=1)
             )
 
         columnas = {}

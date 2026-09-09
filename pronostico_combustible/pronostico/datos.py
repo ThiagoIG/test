@@ -292,6 +292,17 @@ def _construir_meta(df: pd.DataFrame, cfg: Config, avisos: list[str]) -> tuple[p
     meta = df[cols_meta].drop_duplicates(subset="serie_id").set_index("serie_id")
     meta.columns = [c.lstrip("_") for c in meta.columns]
 
+    # La fecha de primer consumo se normaliza a periodo mensual. Es el dato
+    # autoritativo del alta: evita tener que inferirla del primer mes con litros.
+    if "fecha_primer_consumo" in meta.columns:
+        meta["fecha_primer_consumo"] = meta["fecha_primer_consumo"].map(interpretar_mes)
+        sin_fecha = int(meta["fecha_primer_consumo"].isna().sum())
+        if sin_fecha:
+            avisos.append(
+                f"{sin_fecha} series sin 'fecha primer consumo' legible; "
+                f"para esas se infiere el alta del primer mes con litros."
+            )
+
     dups = df["serie_id"].duplicated().sum()
     if dups:
         avisos.append(
