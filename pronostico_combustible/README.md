@@ -81,7 +81,21 @@ confianza darle a cada cliente.
 Hay un test (`test_backtest_no_espia_el_futuro`) que verifica que ningún modelo
 use información posterior al corte. Sin eso, el error reportado sería mentira.
 
-### 4. Reglas de negocio
+### 4. Clientes que no existían en 2024
+
+Si tenés historia desde 2024 pero muchos clientes son altas recientes, sus filas
+arrancan vacías. Esas celdas **no son "consumió 0"**: son "no era cliente".
+
+Tratarlas como ceros hunde los promedios históricos de toda alta nueva y hace que
+el modelo la lea como un cliente errático o en caída. El programa detecta el mes
+de alta (primer mes con consumo) y excluye lo anterior de promedios, tendencias y
+del entrenamiento. Los ceros **posteriores** al alta sí se toman como reales:
+esos son bajas o paradas, e importan.
+
+Se controla con `meses.previo_al_alta` (`no_es_cliente` por defecto, `cero` para
+volver al comportamiento ingenuo y comparar).
+
+### 5. Reglas de negocio
 
 Después del modelo se aplica lo que el modelo no puede saber, todo configurable:
 
@@ -193,7 +207,7 @@ pronostico_combustible/
 │   ├── motor.py                   # orquestador y reglas de negocio
 │   └── salida.py                  # escritura del Excel
 ├── datos/generar_ejemplo.py       # datos sintéticos de prueba
-└── tests/test_pronostico.py       # 45 tests
+└── tests/test_pronostico.py       # 50 tests
 ```
 
 ### Agregar un modelo propio
@@ -220,8 +234,9 @@ pip install pytest
 python -m pytest tests/ -q
 ```
 
-Cubren la detección de meses, la ausencia de data leakage, la forma de salida de
-cada modelo, cada regla de negocio y la validación de la configuración.
+Cubren la detección de meses, la ausencia de data leakage, el tratamiento de los
+meses previos al alta, la forma de salida de cada modelo, cada regla de negocio y
+la validación de la configuración.
 
 ---
 

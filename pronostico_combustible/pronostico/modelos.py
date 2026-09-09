@@ -15,6 +15,7 @@ REGISTRO y activala en config.yaml.
 from __future__ import annotations
 
 import warnings
+from contextlib import contextmanager
 from abc import ABC, abstractmethod
 
 import numpy as np
@@ -41,8 +42,36 @@ class Modelo(ABC):
     @staticmethod
     def _repetir(valores: np.ndarray, futuros: list[pd.Period], indice: pd.Index) -> pd.DataFrame:
         """Aplica el mismo nivel a todos los meses futuros."""
+        valores = np.nan_to_num(valores, nan=0.0, posinf=0.0, neginf=0.0)
         matriz = np.repeat(valores.reshape(-1, 1), len(futuros), axis=1)
         return pd.DataFrame(matriz, index=indice, columns=futuros)
+
+    def _mascara(self, panel: pd.DataFrame) -> np.ndarray:
+        """Meses en que cada serie ya era cliente. Ver 'meses.previo_al_alta'."""
+        if self.cfg.get("meses.previo_al_alta", "no_es_cliente") == "cero":
+            return np.ones(panel.shape, dtype=bool)
+        return car.mascara_actividad(panel)
+
+    def _ventana_activa(self, panel: pd.DataFrame, k: int) -> np.ndarray:
+        """
+        Ultimos k meses, con NaN en los previos al alta del cliente.
+
+        Sin esto, un cliente dado de alta hace 2 meses ve su promedio de 3 meses
+        dividido por 3 en vez de por 2: se subestima sistematicamente a todas
+        las altas recientes.
+        """
+        valores = panel.to_numpy(float)
+        activa = self._mascara(panel)
+        k = min(k, valores.shape[1])
+        return np.where(activa[:, -k:], valores[:, -k:], np.nan)
+
+    @staticmethod
+    @contextmanager
+    def _sin_avisos_de_nan():
+        """Las ventanas enteramente previas al alta dan NaN; es el resultado correcto."""
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            yield
 
 
 # ---------------------------------------------------------------------------
@@ -62,8 +91,10 @@ class MediaMovil(Modelo):
     ventana = 3
 
     def predecir(self, panel, meta, futuros):
-        v = panel.to_numpy(float)[:, -self.ventana:]
-        return self._repetir(v.mean(axis=1), futuros, panel.index)
+        v = self._ventana_activa(panel, self.ventana)
+        with self._sin_avisos_de_nan():
+            nivel = np.nanmean(v, axis=1)
+        return self._repetir(nivel, futuros, panel.index)
 
 
 class MedianaMovil(Modelo):
@@ -72,8 +103,10 @@ class MedianaMovil(Modelo):
     ventana = 3
 
     def predecir(self, panel, meta, futuros):
-        v = panel.to_numpy(float)[:, -self.ventana:]
-        return self._repetir(np.median(v, axis=1), futuros, panel.index)
+        v = self._ventana_activa(panel, self.ventana)
+        with self._sin_avisos_de_nan():
+            nivel = np.nanmedian(v, axis=1)
+        return self._repetir(nivel, futuros, panel.index)
 
 
 class MediaPonderada(Modelo):
@@ -82,11 +115,21 @@ class MediaPonderada(Modelo):
 
     def predecir(self, panel, meta, futuros):
         pesos = np.asarray(self.cfg.get("modelos.pesos_media_movil") or [0.2, 0.3, 0.5], float)
-        pesos = pesos / pesos.sum()
         k = min(len(pesos), panel.shape[1])
-        v = panel.to_numpy(float)[:, -k:]
-        p = pesos[-k:] / pesos[-k:].sum()
-        return self._repetir(v @ p, futuros, panel.index)
+        p = pesos[-k:]
+
+        v = self._ventana_activa(panel, k)
+        presente = ~np.isnan(v)
+
+        # Los pesos se renormalizan sobre los meses efectivamente disponibles,
+        # para no diluir el promedio de un cliente de alta reciente.
+        numerador = np.nansum(np.where(presente, v, 0.0) * p, axis=1)
+        denominador = (presente * p).sum(axis=1)
+        nivel = np.divide(
+            numerador, denominador,
+            out=np.zeros_like(numerador), where=denominador > 0,
+        )
+        return self._repetir(nivel, futuros, panel.index)
 
 
 class TendenciaRobusta(Modelo):
@@ -95,27 +138,35 @@ class TendenciaRobusta(Modelo):
     ventana = 6
 
     def predecir(self, panel, meta, futuros):
-        v = panel.to_numpy(float)[:, -self.ventana:]
+        v = self._ventana_activa(panel, self.ventana)
         n = v.shape[1]
         phi = float(self.cfg.get("modelos.amortiguacion_tendencia", 0.6) or 0.0)
 
         if n < 2:
-            return self._repetir(v[:, -1], futuros, panel.index)
+            return self._repetir(np.nan_to_num(v[:, -1]), futuros, panel.index)
 
-        # Mediana de las pendientes de todos los pares de puntos.
-        i, j = np.triu_indices(n, k=1)
-        pendientes = (v[:, j] - v[:, i]) / (j - i)
-        pendiente = np.median(pendientes, axis=1)
+        with self._sin_avisos_de_nan():
+            # Mediana de las pendientes de todos los pares de puntos. Los pares
+            # que tocan un mes previo al alta dan NaN y quedan descartados: si no,
+            # un cliente nuevo mostraria una pendiente altisima que solo refleja
+            # el salto de "no era cliente" a "es cliente".
+            i, j = np.triu_indices(n, k=1)
+            pendientes = (v[:, j] - v[:, i]) / (j - i)
+            pendiente = np.nanmedian(pendientes, axis=1)
+            pendiente = np.nan_to_num(pendiente)
 
-        # Nivel robusto anclado al centro de la ventana.
-        posiciones = np.arange(n, dtype=float)
-        intercepto = np.median(v - np.outer(pendiente, posiciones), axis=1)
-        nivel = intercepto + pendiente * (n - 1)
+            # Nivel robusto anclado al final de la ventana.
+            posiciones = np.arange(n, dtype=float)
+            intercepto = np.nanmedian(v - np.outer(pendiente, posiciones), axis=1)
+
+        nivel = np.nan_to_num(intercepto) + pendiente * (n - 1)
 
         pasos = np.arange(1, len(futuros) + 1, dtype=float)
         amortiguado = np.cumsum(phi ** pasos) if phi > 0 else np.zeros(len(futuros))
         matriz = nivel.reshape(-1, 1) + np.outer(pendiente, amortiguado)
-        return pd.DataFrame(matriz, index=panel.index, columns=futuros)
+        return pd.DataFrame(
+            np.nan_to_num(matriz), index=panel.index, columns=futuros
+        )
 
 
 class SuavizadoHolt(Modelo):
@@ -125,20 +176,33 @@ class SuavizadoHolt(Modelo):
 
     def predecir(self, panel, meta, futuros):
         v = panel.to_numpy(float)
+        activa = self._mascara(panel)
         phi = float(self.cfg.get("modelos.amortiguacion_tendencia", 0.6) or 0.0)
+        n_series, n_meses = v.shape
 
-        nivel = v[:, 0].copy()
-        tendencia = (v[:, 1] - v[:, 0]) if v.shape[1] > 1 else np.zeros(v.shape[0])
+        # El suavizado arranca en el mes de alta de cada cliente, no en la
+        # primera columna del panel: los meses previos no son ceros que suavizar.
+        primer_activo = activa.argmax(axis=1)
+        nunca_activo = ~activa.any(axis=1)
+        nivel = v[np.arange(n_series), primer_activo].copy()
+        nivel[nunca_activo] = 0.0
+        tendencia = np.zeros(n_series)
 
-        for t in range(1, v.shape[1]):
+        for t in range(1, n_meses):
+            # Solo se actualiza en los meses posteriores al alta de cada serie.
+            actualizar = activa[:, t] & (t > primer_activo)
             nivel_prev = nivel
-            nivel = self.alpha * v[:, t] + (1 - self.alpha) * (nivel_prev + phi * tendencia)
-            tendencia = self.beta * (nivel - nivel_prev) + (1 - self.beta) * phi * tendencia
+            nivel_nuevo = self.alpha * v[:, t] + (1 - self.alpha) * (nivel_prev + phi * tendencia)
+            tendencia_nueva = (
+                self.beta * (nivel_nuevo - nivel_prev) + (1 - self.beta) * phi * tendencia
+            )
+            nivel = np.where(actualizar, nivel_nuevo, nivel_prev)
+            tendencia = np.where(actualizar, tendencia_nueva, tendencia)
 
         pasos = np.arange(1, len(futuros) + 1, dtype=float)
         amortiguado = np.cumsum(phi ** pasos) if phi > 0 else np.zeros(len(futuros))
         matriz = nivel.reshape(-1, 1) + np.outer(tendencia, amortiguado)
-        return pd.DataFrame(matriz, index=panel.index, columns=futuros)
+        return pd.DataFrame(np.nan_to_num(matriz), index=panel.index, columns=futuros)
 
 
 class EstacionalNaive(Modelo):
@@ -148,16 +212,26 @@ class EstacionalNaive(Modelo):
     def predecir(self, panel, meta, futuros):
         disponibles = {p: i for i, p in enumerate(panel.columns)}
         v = panel.to_numpy(float)
-        respaldo = v[:, -3:].mean(axis=1)
+        activa = self._mascara(panel)
+
+        with self._sin_avisos_de_nan():
+            respaldo = np.nan_to_num(
+                np.nanmean(self._ventana_activa(panel, 3), axis=1)
+            )
 
         columnas = {}
         for periodo in futuros:
             hace_un_año = periodo - 12
-            if hace_un_año in disponibles:
-                columnas[periodo] = v[:, disponibles[hace_un_año]]
-            else:
+            if hace_un_año not in disponibles:
                 columnas[periodo] = respaldo
                 self.notas.append(f"Sin dato de {hace_un_año}; se usa promedio de 3 meses.")
+                continue
+
+            col = disponibles[hace_un_año]
+            # Para un cliente que hace un año todavia no existia, ese mes no es
+            # un cero estacional: hay que caer al promedio reciente.
+            columnas[periodo] = np.where(activa[:, col], v[:, col], respaldo)
+
         return pd.DataFrame(columnas, index=panel.index)
 
 
@@ -188,11 +262,12 @@ class MLGlobal(Modelo):
             )
             return respaldo
 
+        usar_mascara = self.cfg.get("meses.previo_al_alta", "no_es_cliente") != "cero"
         entrenamiento = car.construir_muestras(
-            panel, meta, n_lags, min_hist, horizonte, categoricas
+            panel, meta, n_lags, min_hist, horizonte, categoricas, usar_mascara
         )
         prediccion = car.construir_prediccion(
-            panel, meta, n_lags, horizonte, futuros, categoricas
+            panel, meta, n_lags, horizonte, futuros, categoricas, usar_mascara
         )
 
         estrategia = ml.get("estrategia", "directa")

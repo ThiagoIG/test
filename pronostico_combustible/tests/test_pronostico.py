@@ -413,3 +413,101 @@ def test_config_rechaza_clave_serie_sin_columna(tmp_path):
 
     with pytest.raises(ValueError, match="solucion"):
         cargar_config(ruta)
+
+
+# ---------------------------------------------------------------------------
+# Meses previos al alta del cliente
+# ---------------------------------------------------------------------------
+def test_mascara_actividad_detecta_el_alta():
+    from pronostico.caracteristicas import mascara_actividad
+
+    panel = pd.DataFrame([
+        [0.0, 0.0, 100.0, 120.0],   # alta en el mes 3
+        [50.0, 0.0, 0.0, 60.0],     # cliente viejo con dos meses sin consumo
+        [0.0, 0.0, 0.0, 0.0],       # nunca consumio
+    ])
+    esperado = [
+        [False, False, True, True],
+        [True, True, True, True],   # los ceros POSTERIORES al alta si cuentan
+        [False, False, False, False],
+    ]
+    np.testing.assert_array_equal(mascara_actividad(panel), np.array(esperado))
+
+
+def test_features_excluyen_meses_previos_al_alta():
+    from pronostico.caracteristicas import mascara_actividad
+
+    # Alta en el mes 3: solo 100 y 200 son historia real.
+    valores = np.array([[0.0, 0.0, 100.0, 200.0]])
+    mascara = mascara_actividad(pd.DataFrame(valores))
+
+    con = features_en_corte(valores, corte=3, n_lags=2, mascara=mascara)
+    sin = features_en_corte(valores, corte=3, n_lags=2, mascara=None)
+
+    # Con la mascara el promedio es (100+200)/2 = 150.
+    assert con["media_3m"][0] == pytest.approx(150.0)
+    # Sin ella se divide por 3 y se hunde a 100.
+    assert sin["media_3m"][0] == pytest.approx(100.0)
+
+    assert con["meses_desde_alta"][0] == 2
+    assert con["prop_ceros"][0] == pytest.approx(0.0)   # nunca consumio 0 siendo cliente
+    assert sin["prop_ceros"][0] == pytest.approx(0.5)   # los previos al alta se leen como ceros
+
+
+def test_media_movil_no_subestima_altas_recientes():
+    """Un cliente de alta reciente no debe verse castigado por sus meses previos."""
+    panel = pd.DataFrame(
+        [[0.0, 0.0, 900.0, 1000.0, 1100.0]],
+        index=pd.Index(["nuevo"], name="serie_id"),
+        columns=[pd.Period("2026-04", freq="M") + i for i in range(5)],
+    )
+    meta = pd.DataFrame({"segmento": ["Micro"]}, index=panel.index)
+    futuros = [pd.Period("2026-09", freq="M")]
+
+    modelos = crear_modelos(_config_minima())
+    activo = modelos["media_3m"].predecir(panel, meta, futuros).iloc[0, 0]
+    assert activo == pytest.approx(1000.0)   # (900 + 1000 + 1100) / 3
+
+    apagado = crear_modelos(
+        _config_minima(meses={"previo_al_alta": "cero", "horizonte": 4,
+                              "deteccion": "auto", "celdas_vacias": "cero"})
+    )["media_3m"].predecir(panel, meta, futuros).iloc[0, 0]
+    assert apagado == pytest.approx(1000.0)  # aca la ventana de 3 ya es toda posterior al alta
+
+
+def test_entrenamiento_descarta_meses_previos_al_alta():
+    """Las filas con y=0 por no ser todavia cliente no deben entrar al modelo."""
+    from pronostico.caracteristicas import construir_muestras
+
+    periodos = [pd.Period("2025-01", freq="M") + i for i in range(12)]
+    indice = pd.Index(["viejo", "nuevo"], name="serie_id")
+    panel = pd.DataFrame(
+        [
+            [100.0] * 12,                       # cliente de siempre
+            [0.0] * 8 + [500.0] * 4,            # alta en el mes 9
+        ],
+        index=indice, columns=periodos,
+    )
+    meta = pd.DataFrame({"segmento": ["A", "B"]}, index=indice)
+
+    con = construir_muestras(panel, meta, 3, 3, 4, ["segmento"], usar_mascara=True)
+    sin = construir_muestras(panel, meta, 3, 3, 4, ["segmento"], usar_mascara=False)
+
+    filas_nuevo_con = (con[1]["serie_id"] == "nuevo").sum()
+    filas_nuevo_sin = (sin[1]["serie_id"] == "nuevo").sum()
+    assert filas_nuevo_con < filas_nuevo_sin
+
+    # Ninguna fila del cliente nuevo puede tener y=0 por no existir todavia.
+    assert (con[1].loc[con[1]["serie_id"] == "nuevo", "y"] > 0).all()
+
+
+def test_previo_al_alta_es_configurable(entorno):
+    carpeta, base = entorno
+    a = _correr(base, carpeta, **{"meses.previo_al_alta": "no_es_cliente"})
+    b = _correr(base, carpeta, **{"meses.previo_al_alta": "cero"})
+
+    # Ambos modos deben correr y dar resultados validos, pero distintos.
+    for r in (a, b):
+        assert np.isfinite(r.pronostico.to_numpy()).all()
+        assert (r.pronostico.to_numpy() >= 0).all()
+    assert a.pronostico.to_numpy().sum() != b.pronostico.to_numpy().sum()

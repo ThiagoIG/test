@@ -80,6 +80,17 @@ meses:
   #   "nulo"  -> dato faltante, se ignora en el entrenamiento
   celdas_vacias: "cero"
 
+  # Que hacer con los meses ANTERIORES al alta del cliente. Importa mucho si
+  # tenes historia desde 2024 pero muchos clientes son altas recientes: sus
+  # filas van a tener celdas vacias al principio.
+  #   "no_es_cliente" -> se excluyen de promedios, tendencias y entrenamiento.
+  #                      RECOMENDADO: no es "consumio 0", es "no era cliente".
+  #   "cero"          -> se cuentan como consumo cero (hunde los promedios de
+  #                      las altas nuevas y las hace ver como clientes en caida).
+  # El alta se detecta como el primer mes con consumo. Los ceros POSTERIORES
+  # si se toman como reales (baja, parada de planta, etc.).
+  previo_al_alta: "no_es_cliente"
+
 
 # -----------------------------------------------------------------------------
 # 4. MODELOS CANDIDATOS

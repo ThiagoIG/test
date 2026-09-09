@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -112,12 +113,19 @@ def _aplicar_reglas(
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     reglas = cfg.get("reglas") or {}
     valores = panel.to_numpy(float)
+    activa = _mascara_actividad(panel, cfg)
     final = crudo.copy()
 
     diag = pd.DataFrame(index=panel.index)
     diag["meses_con_consumo"] = (valores > 0).sum(axis=1)
     diag["consumo_total_hist"] = valores.sum(axis=1)
-    diag["promedio_3m"] = valores[:, -3:].mean(axis=1)
+    # El promedio se calcula solo sobre los meses en que ya era cliente.
+    # Una serie sin ningun mes activo da una ventana vacia: el NaN es correcto
+    # y se convierte a 0, no es un error que haya que mostrar.
+    ventana = np.where(activa[:, -3:], valores[:, -3:], np.nan)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        diag["promedio_3m"] = np.nan_to_num(np.nanmean(ventana, axis=1))
     diag["maximo_hist"] = valores.max(axis=1)
     diag["clasificacion"] = "normal"
 
@@ -135,7 +143,7 @@ def _aplicar_reglas(
         nuevos = (diag["meses_con_consumo"] < min_meses) & (diag["clasificacion"] != "inactivo")
         if nuevos.any():
             mapa, etiquetas = _perfil_de_grupo(
-                panel, datos, cfg_nuevos.get("agrupar_por") or []
+                panel, datos, cfg_nuevos.get("agrupar_por") or [], activa
             )
             diag.loc[nuevos, "clasificacion"] = "nuevo"
             final.loc[nuevos] = _pronostico_para_nuevos(
@@ -190,6 +198,13 @@ def _aplicar_reglas(
     return final, diag
 
 
+def _mascara_actividad(panel: pd.DataFrame, cfg: Config) -> np.ndarray:
+    """Meses en que cada serie ya era cliente. Ver 'meses.previo_al_alta'."""
+    if cfg.get("meses.previo_al_alta", "no_es_cliente") == "cero":
+        return np.ones(panel.shape, dtype=bool)
+    return car.mascara_actividad(panel)
+
+
 def _etiquetas_grupo(
     meta: pd.DataFrame, indice: pd.Index, agrupar_por: list[str]
 ) -> pd.Series:
@@ -211,7 +226,8 @@ def _etiquetas_grupo(
 
 
 def _perfil_de_grupo(
-    panel: pd.DataFrame, datos: DatosCargados, agrupar_por: list[str]
+    panel: pd.DataFrame, datos: DatosCargados, agrupar_por: list[str],
+    activa: np.ndarray | None = None,
 ) -> tuple[dict[tuple[str, int], float], pd.Series]:
     """
     Indice estacional por grupo: cuanto consume el grupo en cada mes calendario
@@ -224,6 +240,13 @@ def _perfil_de_grupo(
 
     largo = panel.stack().rename("litros").reset_index()
     largo.columns = ["serie_id", "periodo", "litros"]
+
+    if activa is not None:
+        # Los meses previos al alta no describen la estacionalidad del grupo:
+        # incluirlos como ceros aplanaria el perfil de las industrias con muchas
+        # altas recientes.
+        vigente = pd.DataFrame(activa, index=panel.index, columns=panel.columns)
+        largo = largo[vigente.stack().to_numpy()]
 
     # Cada serie se normaliza por su propio promedio: asi un cliente grande y uno
     # chico aportan por igual a la FORMA estacional del grupo.
