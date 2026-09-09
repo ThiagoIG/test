@@ -602,3 +602,36 @@ def test_funciona_sin_la_columna_de_alta(entorno):
     assert "fecha_primer_consumo" not in res.datos.meta.columns
     assert np.isfinite(res.pronostico.to_numpy()).all()
     assert (res.pronostico.to_numpy() >= 0).all()
+
+
+def test_id_mas_solucion_es_la_clave_unica(entorno):
+    """
+    Regla del negocio: el ID se repite entre soluciones, pero ID + Solucion es
+    unico. Si esa combinacion se repitiera, los litros se suman y se avisa —
+    nunca en silencio, porque duplicaria el consumo de ese cliente.
+    """
+    carpeta, base = entorno
+    normal = _correr(base, carpeta)
+
+    entrada = pd.read_excel(base["archivos"]["entrada"])
+    assert not entrada.duplicated(subset=["ID", "Solucion"]).any()
+    assert entrada.duplicated(subset=["ID"]).any(), "el caso debe tener IDs repetidos"
+
+    # Se duplica una fila partiendo sus litros: el total por serie no cambia.
+    meses = [c for c in entrada.columns if interpretar_mes(c) is not None]
+    entrada.loc[0, meses] = entrada.loc[0, meses] / 2
+    duplicada = pd.concat([entrada, entrada.iloc[[0]]], ignore_index=True)
+
+    ruta = carpeta / "duplicado.xlsx"
+    duplicada.to_excel(ruta, index=False)
+    con_duplicado = _correr(base, carpeta, **{"archivos.entrada": str(ruta)})
+
+    assert len(con_duplicado.pronostico) == len(normal.pronostico)
+    assert any("misma clave de serie" in a for a in con_duplicado.avisos)
+
+    clave = f"{entrada.loc[0, 'ID']} | {entrada.loc[0, 'Solucion']}"
+    np.testing.assert_allclose(
+        con_duplicado.diagnostico.loc[clave, "consumo_total_hist"],
+        normal.diagnostico.loc[clave, "consumo_total_hist"],
+        rtol=1e-6,
+    )

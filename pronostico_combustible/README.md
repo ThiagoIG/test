@@ -220,7 +220,7 @@ pronostico_combustible/
 │   ├── motor.py                   # orquestador y reglas de negocio
 │   └── salida.py                  # escritura del Excel
 ├── datos/generar_ejemplo.py       # datos sintéticos de prueba
-└── tests/test_pronostico.py       # 55 tests
+└── tests/test_pronostico.py       # 56 tests
 ```
 
 ### Agregar un modelo propio
