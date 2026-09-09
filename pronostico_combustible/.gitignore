@@ -1,0 +1,12 @@
+# Datos y resultados: no se versionan (pueden ser confidenciales y pesados)
+datos/*.xlsx
+datos/*.xls
+datos/*.csv
+salidas/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/

@@ -1,0 +1,269 @@
+# =============================================================================
+#  CONFIGURACION DEL PRONOSTICO DE CONSUMO DE COMBUSTIBLE (litros / mes)
+# =============================================================================
+#  Este es el UNICO archivo que necesitas tocar para el uso diario.
+#  Todo lo de abajo esta comentado. Cambia valores, no toques la estructura.
+# =============================================================================
+
+
+# -----------------------------------------------------------------------------
+# 1. ARCHIVOS DE ENTRADA Y SALIDA
+# -----------------------------------------------------------------------------
+archivos:
+  # Excel de entrada: clientes en filas, meses en columnas.
+  entrada: "datos/consumo_clientes.xlsx"
+
+  # Nombre de la hoja. "auto" = usa la primera hoja del archivo.
+  hoja: "auto"
+
+  # Fila donde estan los encabezados (1 = primera fila del Excel).
+  fila_encabezado: 1
+
+  # Excel de salida con el pronostico y los reportes.
+  salida: "salidas/pronostico_combustible.xlsx"
+
+
+# -----------------------------------------------------------------------------
+# 2. COLUMNAS DESCRIPTIVAS (las que NO son meses)
+# -----------------------------------------------------------------------------
+#  Si en tu Excel se llaman distinto, cambia SOLO el valor de la derecha.
+#  Pon null si alguna no existe en tu archivo.
+columnas:
+  id_cliente:     "ID"             # codigo unico del cliente (puede repetirse)
+  solucion:       "Solucion"       # Combustible Edenred / Shell Flota
+  nombre_cliente: "Cliente"
+  grupo_cliente:  "Cliente Grupo"
+  segmento:       "Segmento"
+  industria:      "Industria"
+  portfolio:      "Portfolio"      # NS N / NS N-1 / Portfolio
+
+# La serie a pronosticar se identifica por la COMBINACION de estas columnas.
+# Un mismo ID con 2 soluciones = 2 series independientes. Este es el default
+# correcto para tu caso. Si quisieras pronosticar el ID consolidado, deja
+# solamente ["id_cliente"].
+clave_serie: ["id_cliente", "solucion"]
+
+# Columnas categoricas que el modelo de Machine Learning usa como contexto.
+# Permiten que un cliente con poca historia "aprenda" del comportamiento de
+# clientes parecidos (misma industria, mismo segmento, etc.).
+variables_categoricas: ["solucion", "segmento", "industria", "portfolio", "grupo_cliente"]
+
+
+# -----------------------------------------------------------------------------
+# 3. DETECCION DE LAS COLUMNAS DE MESES
+# -----------------------------------------------------------------------------
+meses:
+  # "auto" detecta automaticamente columnas tipo: Ene-25, ene_2025, Enero 2025,
+  # 2025-01, 01/2025, ene25, y fechas reales de Excel.
+  # Si la deteccion falla, pon "manual" y completa 'mapa_manual' abajo.
+  deteccion: "auto"
+
+  # Solo se usa si deteccion = "manual". Formato:  "NombreExactoColumna": "AAAA-MM"
+  mapa_manual:
+    # "Ene 25": "2025-01"
+    # "Feb 25": "2025-02"
+
+  # Ultimo mes con consumo REAL. "auto" = ultimo mes que tiene datos cargados.
+  # Si tu Excel ya trae columnas de Sep-Dic vacias o con estimaciones viejas,
+  # fijalo a mano. Ejemplo: "2026-08"
+  ultimo_mes_real: "auto"
+
+  # Cuantos meses hacia adelante pronosticar (Sep, Oct, Nov, Dic = 4).
+  horizonte: 4
+
+  # Como nombrar las columnas nuevas en el Excel de salida.
+  # "auto" = copia el estilo de tus columnas actuales (Ene-25 -> Sep-25).
+  formato_salida: "auto"
+
+  # Como interpretar celdas vacias en meses del pasado:
+  #   "cero"  -> el cliente existia y no consumio (recomendado para combustible)
+  #   "nulo"  -> dato faltante, se ignora en el entrenamiento
+  celdas_vacias: "cero"
+
+
+# -----------------------------------------------------------------------------
+# 4. MODELOS CANDIDATOS
+# -----------------------------------------------------------------------------
+#  El programa prueba TODOS los modelos activos, mide cual funciona mejor para
+#  cada cliente (backtesting) y usa el ganador. Desactiva con false los que no
+#  quieras que compitan.
+modelos:
+  ultimo_valor:        true   # repite el ultimo mes. Referencia minima.
+  media_3m:            true   # promedio de los ultimos 3 meses. Muy solido.
+  mediana_3m:          true   # como el anterior pero ignora meses atipicos.
+  media_movil_pond:    true   # promedio ponderado, pesa mas los meses recientes.
+  tendencia_robusta:   true   # recta de tendencia resistente a outliers (Theil-Sen).
+  suavizado_holt:      true   # suavizado exponencial con tendencia amortiguada.
+  estacional_naive:    true   # mismo mes del año pasado (necesita >= 13 meses).
+  ml_global:           true   # <-- Machine Learning. Ver seccion 5.
+
+  # Peso del promedio ponderado (del mes mas viejo al mas nuevo).
+  pesos_media_movil: [0.2, 0.3, 0.5]
+
+  # Factor de amortiguacion de la tendencia (0 = sin tendencia, 1 = tendencia plena).
+  # Bajo a proposito: extrapolar tendencias con 8 meses de historia es peligroso.
+  amortiguacion_tendencia: 0.6
+
+
+# -----------------------------------------------------------------------------
+# 5. MODELO DE MACHINE LEARNING (el "modelo global")
+# -----------------------------------------------------------------------------
+#  Entrena UN solo modelo con TODOS los clientes juntos en vez de uno por
+#  cliente. Es lo que hace que funcione con solo 8 meses de historia: aprende
+#  patrones compartidos entre clientes parecidos.
+machine_learning:
+  # "lightgbm" (recomendado) o "sklearn" (sin dependencias extra).
+  algoritmo: "lightgbm"
+
+  # Que predice el modelo internamente:
+  #   "ratio"    -> cuanto crece/cae respecto del promedio reciente del cliente.
+  #                 RECOMENDADO: hace comparables clientes de 500 y de 500.000 lts.
+  #   "log"      -> logaritmo de los litros. Buena alternativa.
+  #   "absoluto" -> litros crudos. Solo si tus clientes son de tamaño similar.
+  objetivo: "ratio"
+
+  # Estrategia multi-mes:
+  #   "directa"  -> un modelo por cada mes futuro (1,2,3,4). Mas robusto.
+  #   "recursiva"-> predice Sep, lo usa para Oct, y asi. Acumula error.
+  estrategia: "directa"
+
+  # Cuantos meses hacia atras mira como variables predictoras.
+  lags: 6
+
+  # Minimo de meses con datos que necesita una serie para entrar al entrenamiento.
+  minimo_historia: 3
+
+  # Limite al ratio predicho (evita pronosticos absurdos tipo x10).
+  ratio_minimo: 0.0
+  ratio_maximo: 3.0
+
+  # Hiperparametros. Conservadores a proposito: pocos datos = modelo simple.
+  hiperparametros:
+    n_estimators: 400
+    learning_rate: 0.05
+    num_leaves: 15
+    min_child_samples: 20
+    subsample: 0.9
+    colsample_bytree: 0.8
+    reg_lambda: 1.0
+  semilla: 42
+
+
+# -----------------------------------------------------------------------------
+# 6. VALIDACION (backtesting)
+# -----------------------------------------------------------------------------
+#  Simula el pronostico en el pasado para saber cuanto errarias hoy.
+validacion:
+  # Cuantas ventanas de prueba correr. Con 8 meses de historia usa 1-2.
+  ventanas: 2
+
+  # Metrica para elegir el modelo ganador:
+  #   "wape" -> error absoluto sobre litros totales. RECOMENDADO para negocio.
+  #   "mae"  -> error absoluto promedio.
+  #   "rmse" -> penaliza mas los errores grandes.
+  metrica: "wape"
+
+  # Como se elige el modelo:
+  #   "por_cliente" -> el mejor para cada cliente (recomendado).
+  #   "global"      -> un solo ganador para toda la cartera.
+  #   "fijo"        -> usa siempre 'modelo_fijo'.
+  seleccion: "por_cliente"
+  modelo_fijo: "media_3m"
+
+  # Modelo por defecto y de respaldo (clientes nuevos, sin datos, o si algo falla).
+  modelo_respaldo: "media_3m"
+
+  # Un modelo alternativo solo le gana al de respaldo si mejora al menos este %.
+  # Evita cambiar de modelo por ruido cuando hay pocos datos de validacion.
+  margen_mejora: 0.05
+
+
+# -----------------------------------------------------------------------------
+# 7. REGLAS DE NEGOCIO (se aplican DESPUES del modelo)
+# -----------------------------------------------------------------------------
+#  Aca es donde metes el conocimiento del negocio que el modelo no puede saber.
+reglas:
+  # Nunca pronosticar litros negativos.
+  no_negativos: true
+
+  # Redondear el resultado final a N decimales (0 = litros enteros).
+  redondeo: 0
+
+  # Cliente INACTIVO: si consumio 0 en los ultimos N meses -> se pronostica 0.
+  # Pon 0 para desactivar la regla.
+  meses_cero_para_inactivo: 3
+
+  # Tope de crecimiento: el pronostico no puede superar este multiplo del
+  # maximo historico del cliente. Protege contra extrapolaciones locas.
+  tope_multiplo_maximo: 1.8
+
+  # Piso: el pronostico no puede caer por debajo de este multiplo del minimo
+  # historico distinto de cero. Pon null para desactivar.
+  piso_multiplo_minimo: null
+
+  # Clientes NUEVOS (poca historia): se usa el perfil promedio de su grupo.
+  clientes_nuevos:
+    minimo_meses: 3                       # con menos de esto, se lo trata como nuevo
+    agrupar_por: ["segmento", "industria"]  # perfil de referencia
+
+  # Factores estacionales manuales por mes (multiplicadores sobre el pronostico).
+  # 1.0 = sin cambio. Ejemplo: si en diciembre baja la operacion, pon 0.90.
+  # Aplica a TODOS los clientes. Editalo con criterio comercial.
+  factores_estacionales:
+    "01": 1.00   # Enero
+    "02": 1.00   # Febrero
+    "03": 1.00   # Marzo
+    "04": 1.00   # Abril
+    "05": 1.00   # Mayo
+    "06": 1.00   # Junio
+    "07": 1.00   # Julio
+    "08": 1.00   # Agosto
+    "09": 1.00   # Septiembre
+    "10": 1.00   # Octubre
+    "11": 1.00   # Noviembre
+    "12": 1.00   # Diciembre
+
+  # Ajuste global: multiplica TODO el pronostico. Util para alinear con una
+  # meta comercial o un escenario (1.05 = +5% en toda la cartera).
+  ajuste_global: 1.00
+
+  # Ajustes manuales por cliente desde una hoja del Excel de entrada.
+  # Permite al equipo comercial pisar el pronostico de clientes puntuales.
+  # Deja hoja: null para desactivar.
+  ajustes_manuales:
+    hoja: null            # ej: "Ajustes"
+    # Columnas esperadas en esa hoja: ID | Solucion | Mes (AAAA-MM) | Factor | Litros
+    # Si 'Litros' tiene valor, pisa el pronostico. Si no, se multiplica por 'Factor'.
+
+
+# -----------------------------------------------------------------------------
+# 8. SALIDA EN EXCEL
+# -----------------------------------------------------------------------------
+salida:
+  hojas:
+    pronostico:           true   # formato ancho, igual a tu Excel + meses nuevos
+    detalle_largo:        true   # una fila por cliente-mes (ideal para tablas dinamicas)
+    validacion:           true   # error de cada cliente y modelo elegido
+    resumen_mensual:      true   # totales de la cartera por mes
+    resumen_dimensiones:  true   # totales por Solucion, Segmento, Industria, Portfolio
+    configuracion:        true   # copia de estos parametros (trazabilidad)
+
+  # Marcar visualmente las columnas pronosticadas con color.
+  colorear_pronostico: true
+
+  # Formato numerico de los litros en el Excel.
+  formato_numero: "#,##0"
+
+  # Incluir columnas con el rango de error estimado (pronostico +/- error).
+  incluir_intervalo: true
+
+
+# -----------------------------------------------------------------------------
+# 9. EJECUCION
+# -----------------------------------------------------------------------------
+ejecucion:
+  # Nivel de detalle en consola: "silencioso", "normal", "detallado".
+  verbosidad: "normal"
+
+  # Semilla global para que los resultados sean reproducibles.
+  semilla: 42
