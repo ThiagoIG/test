@@ -637,3 +637,48 @@ def test_id_mas_solucion_es_la_clave_unica(entorno):
         normal.diagnostico.loc[clave, "consumo_total_hist"],
         rtol=1e-6,
     )
+
+
+# ---------------------------------------------------------------------------
+# Escritura del Excel
+# ---------------------------------------------------------------------------
+def test_ancho_columnas_tolera_columna_vacia(tmp_path):
+    """
+    Una columna sin ningun valor rompia la escritura del Excel.
+
+    El calculo del ancho hacia 'int(serie.str.len().max() or 0)', y en Python
+    NaN es truthy: 'NaN or 0' devuelve NaN, no 0, y int(NaN) explota. Pasa con
+    cualquier categorica que quede entera en nulo despues de la limpieza.
+    """
+    import xlsxwriter
+    from pronostico.salida import _ancho_columnas, _crear_estilos
+
+    df = pd.DataFrame({
+        "vacia_string": pd.Series([pd.NA, pd.NA], dtype="string"),
+        "vacia_float": pd.Series([np.nan, np.nan]),
+        "con_datos": ["abc", "de"],
+        "numeros": [1.0, 2.0],
+    })
+
+    libro = xlsxwriter.Workbook(str(tmp_path / "x.xlsx"))
+    hoja = libro.add_worksheet("h")
+    _ancho_columnas(hoja, df, _crear_estilos(libro, "#,##0"))   # no debe lanzar
+    libro.close()
+
+
+def test_excel_se_escribe_con_categoricas_vacias(entorno, tmp_path):
+    """El circuito completo debe producir el Excel aunque falten datos."""
+    from pronostico import escribir_excel
+
+    carpeta, base = entorno
+    destino = tmp_path / "salida_test.xlsx"
+    res = _correr(base, carpeta, **{"archivos.salida": str(destino)})
+
+    cfg_dict = yaml.safe_load(yaml.safe_dump(base))
+    cfg_dict["archivos"]["salida"] = str(destino)
+    escribir_excel(res, Config(cfg_dict, ruta_base=carpeta))
+
+    assert destino.exists() and destino.stat().st_size > 0
+    hojas = pd.ExcelFile(destino).sheet_names
+    for esperada in ["Pronostico", "Detalle_Largo", "Validacion", "Resumen_Mensual"]:
+        assert esperada in hojas

@@ -76,8 +76,13 @@ def _ancho_columnas(hoja, df: pd.DataFrame, estilos: dict, cols_pronostico: set[
     cols_pronostico = cols_pronostico or set()
     for i, col in enumerate(df.columns):
         muestra = df[col].astype(str).head(200)
-        ancho = max(len(str(col)), int(muestra.str.len().max() or 0)) + 2
-        ancho = min(max(ancho, 9), 32)
+
+        # Una columna enteramente vacia da NA aca. No se puede usar 'or 0':
+        # NaN es truthy en Python, asi que 'NaN or 0' devuelve NaN, no 0.
+        largo_max = muestra.str.len().max()
+        largo_max = 0 if pd.isna(largo_max) else int(largo_max)
+
+        ancho = min(max(max(len(str(col)), largo_max) + 2, 9), 32)
 
         if pd.api.types.is_numeric_dtype(df[col]):
             if str(col).lower().startswith(("error", "sesgo", "variacion", "wape")):
