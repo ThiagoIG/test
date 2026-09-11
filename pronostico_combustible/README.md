@@ -210,6 +210,7 @@ Si tu formato no está, poné `meses.deteccion: manual` y completá `mapa_manual
 ```
 pronostico_combustible/
 ├── config.yaml                    # <- lo único que tocás normalmente
+├── config.ejemplo.yaml            # config de referencia, con datos sintéticos
 ├── run.py                         # punto de entrada
 ├── pronostico/
 │   ├── config.py                  # carga y valida config.yaml
@@ -250,6 +251,69 @@ python -m pytest tests/ -q
 Cubren la detección de meses, la ausencia de data leakage, el tratamiento de los
 meses previos al alta (con fecha declarada y sin ella), la forma de salida de cada modelo, cada regla de negocio y
 la validación de la configuración.
+
+---
+
+## Hallazgos sobre la base real
+
+Medido sobre la base de producción (5.517 series, 56 meses, 2022-01 a 2026-08),
+no sobre datos sintéticos.
+
+### Los modelos empatan
+
+```
+ml_global          WAPE 24.5%     suavizado_holt   WAPE 24.6%
+ultimo_valor       WAPE 24.8%     media_3m         WAPE 25.8%
+```
+
+El Machine Learning le gana a *repetir el último mes* por 0,3 puntos. Es un
+empate técnico, y conviene saberlo antes de invertir en el modelo.
+
+### Por qué: el piso de ruido
+
+Un modelo perfecto que conociera el promedio verdadero de cada cliente igual
+erraría **20,2%**, porque los clientes oscilan solos mes a mes. Con el modelo en
+24,5%, el margen total de mejora es de unos 4 puntos.
+
+### Las variables descriptivas no aportan
+
+Ablación sobre la base real (WAPE de `ml_global`):
+
+| Variables categóricas | WAPE |
+|---|---|
+| Todas (incl. `grupo_cliente`, `fuerza_ventas`) | 24,48% |
+| Sin `grupo_cliente` | 23,92% |
+| Solo industria + segmento | 23,87% |
+| Ninguna | 23,99% |
+
+Quitar todas mueve 0,1 pp: **el modelo se sostiene casi por completo en la
+historia propia de cada cliente**. Y `grupo_cliente` empeoraba el resultado 0,56
+pp, porque con cientos de valores distintos el árbol se sobreajusta partiendo por
+cliente en vez de aprender patrones. Por eso el `config.yaml` ya no lo incluye.
+
+La prueba del oráculo lo confirma: darle al modelo la estacionalidad por industria
+—con información del futuro— *empeora* el error (35,13% contra 34,76%). Las
+amplitudes estacionales por industria son indistinguibles del ruido: la dispersión
+entre industrias (0,056) es igual a la dispersión del índice global entre meses
+(0,053).
+
+### Qué sí serviría
+
+Variables que sean **causa** del consumo, no descripción del cliente: tarjetas o
+vehículos activos por mes, cantidad de transacciones y litros por transacción,
+días hábiles del mes, eventos comerciales conocidos (aumentos firmados, bajas
+notificadas), y el cupo de crédito (si el cliente lo topea, el consumo está
+censurado y no es demanda real).
+
+El cambio mes a mes de la cartera lo dominan los clientes existentes variando su
+consumo (±1,5 a 2,6 M litros), no las altas y bajas (~80-95 mil). Esas
+variaciones son operativas, y ninguna etiqueta del cliente las anticipa.
+
+### Concentración
+
+128 clientes explican el 50% de los litros, y son los más predecibles
+(volatilidad propia 7,3%). Revisar a mano el pronóstico de esos 128 con criterio
+comercial rinde más que cualquier mejora de modelo sobre las 5.517 series.
 
 ---
 

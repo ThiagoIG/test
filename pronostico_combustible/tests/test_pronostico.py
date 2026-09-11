@@ -252,7 +252,9 @@ def entorno(tmp_path_factory):
         entrada, sheet_name="Consumo", index=False
     )
 
-    with open(RAIZ / "config.yaml", encoding="utf-8") as fh:
+    # Se usa el config de EJEMPLO, no el de produccion: config.yaml apunta a la
+    # base real del negocio y sus nombres de columna no son los del generador.
+    with open(RAIZ / "config.ejemplo.yaml", encoding="utf-8") as fh:
         base = yaml.safe_load(fh)
     base["archivos"]["entrada"] = str(entrada)
     base["archivos"]["salida"] = str(carpeta / "salida.xlsx")

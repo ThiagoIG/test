@@ -106,6 +106,10 @@ def _hoja_pronostico(writer, estilos, res: Resultado, cfg: Config):
 
     df = datos.ancho[["serie_id"] + descriptivas + meses_reales].copy()
 
+    # Los encabezados de mes se reescriben con un formato legible: si en el
+    # origen son fechas de Excel, se verian como "2022-01-01 00:00:00".
+    df = df.rename(columns={c: datos.formato.formatear(datos.cols_mes[c]) for c in meses_reales})
+
     # Agrega (o pisa) las columnas de los meses pronosticados.
     nuevas: list[str] = []
     for periodo in datos.futuros:

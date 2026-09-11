@@ -203,6 +203,7 @@ def cargar_datos(cfg: Config) -> DatosCargados:
                   for c in df.columns]
 
     avisos: list[str] = []
+    df = _limpiar(df, cfg, avisos)
     cols_mes = _detectar_meses(df, cfg, avisos)
     if not cols_mes:
         raise ValueError(
@@ -222,6 +223,114 @@ def cargar_datos(cfg: Config) -> DatosCargados:
     futuros = [ultimo_real + i for i in range(1, horizonte + 1)]
 
     return DatosCargados(df, largo, meta, cols_mes, formato, ultimo_real, futuros, avisos)
+
+
+def _limpiar(df: pd.DataFrame, cfg: Config, avisos: list[str]) -> pd.DataFrame:
+    """
+    Saca filas que no son clientes y normaliza el texto de las categoricas.
+
+    Los reportes exportados suelen traer filas de Total/Subtotal embebidas. Si
+    entran al modelo duplican toda la cartera, y es un error silencioso: los
+    numeros salen el doble de grandes sin que nada falle.
+    """
+    n_inicial = len(df)
+    cols_cfg = cfg.get("columnas") or {}
+
+    # --- Filas excluidas explicitamente --------------------------------------
+    for regla in (cfg.get("filtros.excluir_filas") or []):
+        columna = regla.get("columna")
+        valores = {str(v).strip().lower() for v in (regla.get("valores") or [])}
+        if columna not in df.columns or not valores:
+            continue
+        marcadas = df[columna].astype(str).str.strip().str.lower().isin(valores)
+        if marcadas.any():
+            eliminadas = df.loc[marcadas, columna].tolist()
+            litros = _litros_de(df[marcadas], cfg)
+            avisos.append(
+                f"Excluidas {int(marcadas.sum())} filas por '{columna}' en "
+                f"{sorted(set(map(str, eliminadas)))} ({litros:,.0f} litros). "
+                f"Si alguna era un cliente real, sacala de 'filtros.excluir_filas'."
+            )
+            df = df[~marcadas]
+
+    # --- Filas sin identificador ---------------------------------------------
+    if cfg.get("filtros.excluir_sin_clave", True):
+        claves = [str(cols_cfg[c]) for c in (cfg.get("clave_serie") or [])
+                  if str(cols_cfg.get(c)) in df.columns]
+        if claves:
+            vacias = df[claves].isna().any(axis=1)
+            if vacias.any():
+                avisos.append(
+                    f"Excluidas {int(vacias.sum())} filas sin identificador "
+                    f"({' o '.join(claves)} vacio)."
+                )
+                df = df[~vacias]
+
+    # --- Valores que en realidad son dato faltante ---------------------------
+    nulos = {str(v).strip().lower() for v in (cfg.get("limpieza.valores_nulos") or [])}
+    categoricas = [str(cols_cfg[c]) for c in (cfg.get("variables_categoricas") or [])
+                   if str(cols_cfg.get(c)) in df.columns]
+    if nulos and categoricas:
+        df = df.copy()
+        for col in categoricas:
+            sucio = df[col].astype("string").str.strip().str.lower().isin(nulos)
+            if sucio.any():
+                avisos.append(
+                    f"En '{col}' se trataron {int(sucio.sum())} valores como dato faltante "
+                    f"(coinciden con 'limpieza.valores_nulos')."
+                )
+                df.loc[sucio, col] = pd.NA
+
+    # --- Unificacion de mayusculas y espacios --------------------------------
+    if cfg.get("limpieza.normalizar_categoricas", True) and categoricas:
+        df = df.copy()
+        for col in categoricas:
+            df[col] = _unificar_texto(df[col], col, avisos)
+
+    if len(df) != n_inicial:
+        avisos.append(f"Filas procesadas: {len(df)} de {n_inicial} originales.")
+    return df
+
+
+def _litros_de(filas: pd.DataFrame, cfg: Config) -> float:
+    """Suma de litros de un subconjunto, solo para el mensaje de aviso."""
+    total = 0.0
+    for col in filas.columns:
+        if interpretar_mes(col) is not None:
+            total += pd.to_numeric(filas[col], errors="coerce").fillna(0).sum()
+    return float(total)
+
+
+def _unificar_texto(serie: pd.Series, nombre: str, avisos: list[str]) -> pd.Series:
+    """
+    Junta variantes que solo difieren en mayusculas o espacios.
+
+    Se elige como forma canonica la MAS FRECUENTE del archivo, no un title-case
+    automatico: asi 'CORPORATE' se unifica con 'Corporate', pero una sigla como
+    'SME' no termina convertida en 'Sme'.
+    """
+    limpia = serie.astype("string").str.strip()
+    clave = limpia.str.lower()
+
+    canonico = (
+        pd.DataFrame({"clave": clave, "valor": limpia})
+        .dropna()
+        .groupby(["clave", "valor"], observed=True)
+        .size()
+        .reset_index(name="n")
+        .sort_values("n", ascending=False)
+        .drop_duplicates(subset="clave")
+        .set_index("clave")["valor"]
+    )
+
+    unificada = clave.map(canonico)
+    cambios = int((unificada.notna() & (unificada != limpia)).sum())
+    if cambios:
+        avisos.append(
+            f"En '{nombre}' se unificaron {cambios} valores que solo diferian "
+            f"en mayusculas o espacios."
+        )
+    return unificada
 
 
 def _detectar_meses(df: pd.DataFrame, cfg: Config, avisos: list[str]) -> dict[str, pd.Period]:
@@ -255,7 +364,9 @@ def _detectar_meses(df: pd.DataFrame, cfg: Config, avisos: list[str]) -> dict[st
             if convertida.notna().sum() == 0 and df[col].notna().sum() > 0:
                 avisos.append(f"La columna '{col}' parece un mes pero no tiene valores numericos; se ignora.")
                 continue
-        resultado[str(col)] = periodo
+        # La clave es la columna TAL CUAL, no su texto: si el encabezado es un
+        # datetime de Excel, convertirlo a str lo vuelve inencontrable en el DataFrame.
+        resultado[col] = periodo
 
     duplicados = pd.Series(list(resultado.values())).duplicated(keep=False)
     if duplicados.any():

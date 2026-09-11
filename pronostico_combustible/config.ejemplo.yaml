@@ -1,5 +1,7 @@
 # =============================================================================
-#  CONFIGURACION DEL PRONOSTICO DE CONSUMO DE COMBUSTIBLE (litros / mes)
+#  CONFIGURACION DE EJEMPLO -- apunta a los datos sinteticos de datos/
+#  Sirve de referencia y es la que usan los tests.
+#  Para tu base real usa config.yaml.
 # =============================================================================
 #  Este es el UNICO archivo que necesitas tocar para el uso diario.
 #  Todo lo de abajo esta comentado. Cambia valores, no toques la estructura.
@@ -11,16 +13,16 @@
 # -----------------------------------------------------------------------------
 archivos:
   # Excel de entrada: clientes en filas, meses en columnas.
-  entrada: "datos/base_real.xlsx"
+  entrada: "datos/consumo_clientes.xlsx"
 
   # Nombre de la hoja. "auto" = usa la primera hoja del archivo.
-  hoja: "Liters base actual"
+  hoja: "auto"
 
   # Fila donde estan los encabezados (1 = primera fila del Excel).
   fila_encabezado: 1
 
   # Excel de salida con el pronostico y los reportes.
-  salida: "salidas/pronostico_combustible.xlsx"
+  salida: "salidas/pronostico_ejemplo.xlsx"
 
 
 # -----------------------------------------------------------------------------
@@ -29,14 +31,14 @@ archivos:
 #  Si en tu Excel se llaman distinto, cambia SOLO el valor de la derecha.
 #  Pon null si alguna no existe en tu archivo.
 columnas:
-  id_cliente:     "Cod."           # codigo del cliente (se repite entre soluciones)
-  solucion:       "Solución"       # Shell Flota / Ticket Car
+  id_cliente:     "ID"
+  solucion:       "Solucion"
   nombre_cliente: "Cliente"
-  grupo_cliente:  "Cliente grupo"
-  segmento:       "Segmento"       # SME / Corporate / Public / Key Account
+  grupo_cliente:  "Cliente Grupo"
+  segmento:       "Segmento"
   industria:      "Industria"
-  portfolio:      "Class F2"       # NS N / NS N-1 / Portfolio
-  fuerza_ventas:  "Fuerza de Ventas"
+  portfolio:      "Portfolio"
+  fuerza_ventas:  null
 
   # Mes del primer consumo del cliente. Es el dato AUTORITATIVO del alta: con
   # el, el programa no tiene que adivinar desde cuando la fila es historia real.
@@ -52,18 +54,6 @@ clave_serie: ["id_cliente", "solucion"]
 # Columnas categoricas que el modelo de Machine Learning usa como contexto.
 # Permiten que un cliente con poca historia "aprenda" del comportamiento de
 # clientes parecidos (misma industria, mismo segmento, etc.).
-#
-# MEDIDO SOBRE LA BASE REAL (ablacion, WAPE del ml_global):
-#     todas, incluyendo grupo_cliente y fuerza_ventas ... 24.48%
-#     sin grupo_cliente .............................. 23.92%
-#     solo industria + segmento ...................... 23.87%
-#     ninguna categorica ............................. 23.99%
-#
-# 'grupo_cliente' se saco porque EMPEORA el modelo: tiene cientos de valores
-# distintos y el arbol se sobreajusta partiendo por cliente en vez de aprender
-# patrones. 'fuerza_ventas' tiene 42% de nulos y no aporta.
-# La diferencia entre lo que quedo y no usar ninguna es de 0.1 pp, o sea ruido:
-# el modelo se sostiene casi por completo en la historia propia de cada cliente.
 variables_categoricas: ["solucion", "segmento", "industria", "portfolio"]
 
 
@@ -74,8 +64,8 @@ filtros:
   # Filas que NO son clientes. Los reportes exportados suelen traer totales
   # embebidos: si entran al modelo duplican toda la cartera en silencio.
   excluir_filas:
-    - columna: "Ref"
-      valores: ["Subotal", "Subtotal", "Total", "TOTAL", "Suma"]
+    - columna: "ID"
+      valores: ["Subtotal", "Total", "TOTAL", "Suma"]
 
   # Descartar filas sin identificador (Cod. o Solución vacios).
   excluir_sin_clave: true
